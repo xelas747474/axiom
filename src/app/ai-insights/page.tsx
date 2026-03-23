@@ -104,15 +104,29 @@ export default function AIInsightsPage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    let retryCount = 0;
+
     async function fetchInsights() {
       try {
-        const res = await fetch("/api/ai-insights");
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+        const res = await fetch("/api/ai-insights", { signal: controller.signal });
+        clearTimeout(timeoutId);
+
         if (res.ok) {
           const json = await res.json();
-          setInsights(json);
+          // Validate the response has real content (not empty N/A)
+          if (json.global?.content && json.global.content !== "Données en cours de chargement...") {
+            setInsights(json);
+          }
         }
       } catch {
-        // API not available
+        if (retryCount < 2) {
+          retryCount++;
+          setTimeout(fetchInsights, 2000 * retryCount);
+          return;
+        }
       } finally {
         setLoading(false);
       }

@@ -29,15 +29,26 @@ export default function AlertsPage() {
   const [alertsData, setAlertsData] = useState<Alert[]>(defaultAlerts);
 
   useEffect(() => {
+    let retryCount = 0;
+
     async function fetchAlerts() {
       try {
-        const res = await fetch("/api/market");
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+        const res = await fetch("/api/market", { signal: controller.signal });
+        clearTimeout(timeoutId);
+
         if (res.ok) {
           const json = await res.json();
           if (json.alerts?.length) setAlertsData(json.alerts);
         }
       } catch {
-        // Use defaults
+        if (retryCount < 2) {
+          retryCount++;
+          setTimeout(fetchAlerts, 2000 * retryCount);
+          return;
+        }
       }
     }
     fetchAlerts();

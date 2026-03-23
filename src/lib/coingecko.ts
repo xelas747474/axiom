@@ -1,9 +1,10 @@
 // ============================================
-// CoinGecko API Client
-// Free API — no key required (rate limited)
+// CoinGecko API Client — with retry, timeout, and full fallbacks
+// Free API — no key required (rate limited at ~30 req/min)
 // ============================================
 
 const BASE_URL = "https://api.coingecko.com/api/v3";
+const FETCH_TIMEOUT = 8000; // 8s timeout per request
 
 interface CoinGeckoMarketCoin {
   id: string;
@@ -49,58 +50,122 @@ export interface MarketDataResult {
     change24h: number;
   }>;
   chartData: Record<string, number[]>;
+  isLive: boolean; // indicates whether data is real or fallback
 }
 
-async function fetchJSON<T>(url: string): Promise<T> {
-  const res = await fetch(url, {
-    next: { revalidate: 60 },
-    headers: { Accept: "application/json" },
-  });
-  if (!res.ok) throw new Error(`CoinGecko API error: ${res.status}`);
-  return res.json();
+// ============================================
+// Full fallback data — used when API is unreachable
+// ============================================
+export const FALLBACK_MARKET_DATA: MarketDataResult = {
+  bitcoin: { price: 67842.5, change24h: 2.34 },
+  ethereum: { price: 3521.18, change24h: -0.87 },
+  marketCap: 2.47,
+  btcDominance: 54.2,
+  fearGreedIndex: 62,
+  topGainers: [
+    { name: "Solana", symbol: "SOL", price: 178.42, change24h: 8.56 },
+    { name: "Avalanche", symbol: "AVAX", price: 42.18, change24h: 6.23 },
+    { name: "Chainlink", symbol: "LINK", price: 18.95, change24h: 5.12 },
+    { name: "Render", symbol: "RNDR", price: 11.24, change24h: 4.87 },
+    { name: "Injective", symbol: "INJ", price: 35.67, change24h: 4.15 },
+  ],
+  topLosers: [
+    { name: "Dogecoin", symbol: "DOGE", price: 0.1234, change24h: -5.67 },
+    { name: "Shiba Inu", symbol: "SHIB", price: 0.00002345, change24h: -4.89 },
+    { name: "Cardano", symbol: "ADA", price: 0.5678, change24h: -3.45 },
+    { name: "Polkadot", symbol: "DOT", price: 7.89, change24h: -2.98 },
+    { name: "Cosmos", symbol: "ATOM", price: 9.12, change24h: -2.34 },
+  ],
+  chartData: {
+    "1H": [67500, 67600, 67450, 67700, 67650, 67800, 67750, 67842],
+    "1D": [66800, 67100, 66900, 67400, 67200, 67600, 67500, 67842],
+    "1W": [64000, 65200, 64800, 66500, 65900, 67200, 66800, 67842],
+    "1M": [58000, 60500, 59000, 63000, 61500, 65000, 64000, 67842],
+    "1Y": [28000, 35000, 42000, 38000, 45000, 52000, 60000, 67842],
+  },
+  isLive: false,
+};
+
+// ============================================
+// Fetch with timeout + retry
+// ============================================
+async function fetchWithTimeout<T>(url: string, retries = 2): Promise<T | null> {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT);
+
+      const res = await fetch(url, {
+        signal: controller.signal,
+        headers: {
+          Accept: "application/json",
+          "User-Agent": "AXIOM-Crypto-Dashboard/1.0",
+        },
+      });
+
+      clearTimeout(timeoutId);
+
+      if (res.status === 429) {
+        // Rate limited — wait and retry
+        if (attempt < retries) {
+          await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)));
+          continue;
+        }
+        return null;
+      }
+
+      if (!res.ok) return null;
+      return (await res.json()) as T;
+    } catch {
+      if (attempt < retries) {
+        await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+        continue;
+      }
+      return null;
+    }
+  }
+  return null;
 }
 
+// ============================================
+// Main fetch — gracefully degrades on any failure
+// ============================================
 export async function fetchMarketData(): Promise<MarketDataResult> {
-  // Fetch market coins (top 50 by market cap)
   const [coins, globalData, fearGreedData, btcChart7d, btcChart30d, btcChart365d] =
-    await Promise.allSettled([
-      fetchJSON<CoinGeckoMarketCoin[]>(
+    await Promise.all([
+      fetchWithTimeout<CoinGeckoMarketCoin[]>(
         `${BASE_URL}/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=50&page=1&sparkline=false&price_change_percentage=24h`
       ),
-      fetchJSON<CoinGeckoGlobal>(`${BASE_URL}/global`),
-      fetchJSON<CoinGeckoFearGreed>(
+      fetchWithTimeout<CoinGeckoGlobal>(`${BASE_URL}/global`),
+      fetchWithTimeout<CoinGeckoFearGreed>(
         "https://api.alternative.me/fng/?limit=1"
       ),
-      fetchJSON<{ prices: [number, number][] }>(
+      fetchWithTimeout<{ prices: [number, number][] }>(
         `${BASE_URL}/coins/bitcoin/market_chart?vs_currency=usd&days=7`
       ),
-      fetchJSON<{ prices: [number, number][] }>(
+      fetchWithTimeout<{ prices: [number, number][] }>(
         `${BASE_URL}/coins/bitcoin/market_chart?vs_currency=usd&days=30`
       ),
-      fetchJSON<{ prices: [number, number][] }>(
+      fetchWithTimeout<{ prices: [number, number][] }>(
         `${BASE_URL}/coins/bitcoin/market_chart?vs_currency=usd&days=365`
       ),
     ]);
 
-  const coinsData =
-    coins.status === "fulfilled" ? coins.value : null;
-  const global =
-    globalData.status === "fulfilled" ? globalData.value : null;
-  const fearGreed =
-    fearGreedData.status === "fulfilled" ? fearGreedData.value : null;
+  // If the critical request (coins) failed, return full fallback
+  if (!coins) {
+    return FALLBACK_MARKET_DATA;
+  }
 
-  const btc = coinsData?.find((c) => c.id === "bitcoin");
-  const eth = coinsData?.find((c) => c.id === "ethereum");
+  const btc = coins.find((c) => c.id === "bitcoin");
+  const eth = coins.find((c) => c.id === "ethereum");
 
   // Sort by 24h change for gainers/losers
-  const sorted = coinsData
-    ? [...coinsData]
-        .filter((c) => c.price_change_percentage_24h != null)
-        .sort(
-          (a, b) =>
-            b.price_change_percentage_24h - a.price_change_percentage_24h
-        )
-    : [];
+  const sorted = [...coins]
+    .filter((c) => c.price_change_percentage_24h != null)
+    .sort(
+      (a, b) =>
+        b.price_change_percentage_24h - a.price_change_percentage_24h
+    );
 
   const topGainers = sorted.slice(0, 5).map((c) => ({
     name: c.name,
@@ -121,12 +186,12 @@ export async function fetchMarketData(): Promise<MarketDataResult> {
 
   // Extract chart data — sample 8 evenly spaced points
   function samplePrices(
-    result: PromiseSettledResult<{ prices: [number, number][] }>,
+    data: { prices: [number, number][] } | null,
     fallback: number[]
   ): number[] {
-    if (result.status !== "fulfilled") return fallback;
-    const prices = result.value.prices.map((p) => p[1]);
-    if (prices.length < 8) return prices;
+    if (!data?.prices?.length) return fallback;
+    const prices = data.prices.map((p) => p[1]);
+    if (prices.length < 8) return prices.map(Math.round);
     const step = Math.floor(prices.length / 7);
     const sampled: number[] = [];
     for (let i = 0; i < 7; i++) {
@@ -136,43 +201,46 @@ export async function fetchMarketData(): Promise<MarketDataResult> {
     return sampled;
   }
 
-  const btcPrice = btc?.current_price ?? 67842;
+  const btcPrice = btc?.current_price ?? FALLBACK_MARKET_DATA.bitcoin.price;
+  const fallbackChart = FALLBACK_MARKET_DATA.chartData;
+
   const chartData: Record<string, number[]> = {
     "1H": [
       btcPrice * 0.998, btcPrice * 0.999, btcPrice * 0.997,
       btcPrice * 1.001, btcPrice * 1.0, btcPrice * 1.002,
       btcPrice * 1.001, btcPrice,
     ].map(Math.round),
-    "1D": samplePrices(btcChart7d, [btcPrice]),
-    "1W": samplePrices(btcChart7d, [btcPrice]),
-    "1M": samplePrices(btcChart30d, [btcPrice]),
-    "1Y": samplePrices(btcChart365d, [btcPrice]),
+    "1D": samplePrices(btcChart7d, fallbackChart["1D"]),
+    "1W": samplePrices(btcChart7d, fallbackChart["1W"]),
+    "1M": samplePrices(btcChart30d, fallbackChart["1M"]),
+    "1Y": samplePrices(btcChart365d, fallbackChart["1Y"]),
   };
 
-  const fgiValue = fearGreed?.data?.[0]?.value
-    ? parseInt(fearGreed.data[0].value, 10)
-    : 50;
+  const fgiValue = fearGreedData?.data?.[0]?.value
+    ? parseInt(fearGreedData.data[0].value, 10)
+    : FALLBACK_MARKET_DATA.fearGreedIndex;
 
   return {
     bitcoin: {
-      price: btc?.current_price ?? 67842,
+      price: btc?.current_price ?? FALLBACK_MARKET_DATA.bitcoin.price,
       change24h:
-        Math.round((btc?.price_change_percentage_24h ?? 2.34) * 100) / 100,
+        Math.round((btc?.price_change_percentage_24h ?? FALLBACK_MARKET_DATA.bitcoin.change24h) * 100) / 100,
     },
     ethereum: {
-      price: eth?.current_price ?? 3521,
+      price: eth?.current_price ?? FALLBACK_MARKET_DATA.ethereum.price,
       change24h:
-        Math.round((eth?.price_change_percentage_24h ?? -0.87) * 100) / 100,
+        Math.round((eth?.price_change_percentage_24h ?? FALLBACK_MARKET_DATA.ethereum.change24h) * 100) / 100,
     },
-    marketCap: global
-      ? Math.round((global.data.total_market_cap.usd / 1e12) * 100) / 100
-      : 2.47,
-    btcDominance: global
-      ? Math.round(global.data.market_cap_percentage.btc * 10) / 10
-      : 54.2,
+    marketCap: globalData
+      ? Math.round((globalData.data.total_market_cap.usd / 1e12) * 100) / 100
+      : FALLBACK_MARKET_DATA.marketCap,
+    btcDominance: globalData
+      ? Math.round(globalData.data.market_cap_percentage.btc * 10) / 10
+      : FALLBACK_MARKET_DATA.btcDominance,
     fearGreedIndex: fgiValue,
-    topGainers,
-    topLosers,
+    topGainers: topGainers.length > 0 ? topGainers : FALLBACK_MARKET_DATA.topGainers,
+    topLosers: topLosers.length > 0 ? topLosers : FALLBACK_MARKET_DATA.topLosers,
     chartData,
+    isLive: true,
   };
 }

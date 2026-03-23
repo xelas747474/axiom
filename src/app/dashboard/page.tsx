@@ -58,23 +58,43 @@ interface MarketData {
 export default function Dashboard() {
   const [data, setData] = useState<MarketData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [isLive, setIsLive] = useState(false);
 
   useEffect(() => {
+    let retryCount = 0;
+    const maxRetries = 3;
+
     async function fetchData() {
       try {
-        const res = await fetch("/api/market");
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+        const res = await fetch("/api/market", { signal: controller.signal });
+        clearTimeout(timeoutId);
+
         if (res.ok) {
           const json = await res.json();
           setData(json);
+          setIsLive(json.isLive ?? false);
+          retryCount = 0; // Reset on success
         }
       } catch {
-        // API not available — will use null state
+        // Retry with backoff on failure
+        if (retryCount < maxRetries) {
+          retryCount++;
+          setTimeout(fetchData, 2000 * retryCount);
+          return;
+        }
+        // After max retries, stay on fallback — it's already set
       } finally {
         setLoading(false);
       }
     }
     fetchData();
-    const interval = setInterval(fetchData, 60000); // Refresh every 60s
+    const interval = setInterval(() => {
+      retryCount = 0;
+      fetchData();
+    }, 60000);
     return () => clearInterval(interval);
   }, []);
 
@@ -153,10 +173,10 @@ export default function Dashboard() {
       <section className="animate-fade-in-up" style={{ animationDelay: "100ms" }}>
         <h2 className="text-xl font-bold text-white mb-5 flex items-center gap-2">
           Market Overview
-          {!loading && data && (
-            <span className="flex items-center gap-1.5 text-xs font-normal text-[var(--color-positive)]">
-              <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-positive)] animate-live-pulse" />
-              Live
+          {!loading && (
+            <span className={`flex items-center gap-1.5 text-xs font-normal ${isLive ? "text-[var(--color-positive)]" : "text-[var(--color-text-muted)]"}`}>
+              <span className={`h-1.5 w-1.5 rounded-full ${isLive ? "bg-[var(--color-positive)] animate-live-pulse" : "bg-[var(--color-text-muted)]"}`} />
+              {isLive ? "Live" : "Données démo"}
             </span>
           )}
         </h2>

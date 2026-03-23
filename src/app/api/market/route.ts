@@ -1,50 +1,35 @@
-import { fetchMarketData } from "@/lib/coingecko";
+import { fetchMarketData, FALLBACK_MARKET_DATA, type MarketDataResult } from "@/lib/coingecko";
 import {
   alerts as mockAlerts,
   quickInsights as mockInsights,
   aiMarketSummary as mockSummary,
 } from "@/data/mock";
 
-export const revalidate = 60; // ISR: revalidate every 60s
+export const dynamic = "force-dynamic"; // Always run server-side, never static
 
 export async function GET() {
+  let market: MarketDataResult;
+
   try {
-    const market = await fetchMarketData();
-
-    // Generate dynamic AI summary based on real data
-    const summary = generateAISummary(market);
-
-    // Generate dynamic alerts based on real data
-    const dynamicAlerts = generateAlerts(market);
-
-    // Generate dynamic insights
-    const insights = generateInsights(market);
-
-    return Response.json({
-      ...market,
-      aiSummary: summary,
-      alerts: dynamicAlerts.length > 0 ? dynamicAlerts : mockAlerts,
-      quickInsights: insights,
-    });
+    market = await fetchMarketData();
   } catch {
-    // Fallback to mock data if CoinGecko is unreachable
-    return Response.json({
-      bitcoin: { price: 67842.5, change24h: 2.34 },
-      ethereum: { price: 3521.18, change24h: -0.87 },
-      marketCap: 2.47,
-      btcDominance: 54.2,
-      fearGreedIndex: 62,
-      topGainers: [],
-      topLosers: [],
-      chartData: {},
-      aiSummary: mockSummary,
-      alerts: mockAlerts,
-      quickInsights: mockInsights,
-    });
+    market = FALLBACK_MARKET_DATA;
   }
+
+  // Generate AI summary, alerts, and insights from whatever data we have
+  const summary = generateAISummary(market);
+  const dynamicAlerts = generateAlerts(market);
+  const insights = generateInsights(market);
+
+  return Response.json({
+    ...market,
+    aiSummary: summary,
+    alerts: dynamicAlerts,
+    quickInsights: insights,
+  });
 }
 
-function generateAISummary(data: Awaited<ReturnType<typeof fetchMarketData>>): string {
+function generateAISummary(data: MarketDataResult): string {
   const btcTrend = data.bitcoin.change24h >= 0 ? "haussière" : "baissière";
   const ethTrend = data.ethereum.change24h >= 0 ? "haussière" : "baissière";
   const fgi = data.fearGreedIndex;
@@ -52,23 +37,29 @@ function generateAISummary(data: Awaited<ReturnType<typeof fetchMarketData>>): s
   let sentiment: string;
   if (fgi <= 25) sentiment = "La peur extrême domine le marché, ce qui peut représenter une opportunité d'achat contrariante.";
   else if (fgi <= 45) sentiment = "Le sentiment de peur indique une prudence généralisée des investisseurs.";
-  else if (fgi <= 55) sentiment = "Le marché est dans une phase neutre, en attente de catalyseurs.";
-  else if (fgi <= 75) sentiment = "Un sentiment de cupidité modérée règne, ce qui est typique d'un marché optimiste mais encore rationnel.";
+  else if (fgi <= 55) sentiment = "Le marché est dans une phase neutre, en attente de catalyseurs directionnels.";
+  else if (fgi <= 75) sentiment = "Un sentiment de cupidité modérée règne, typique d'un marché optimiste mais rationnel.";
   else sentiment = "La cupidité extrême suggère un risque de correction. La prudence est de mise.";
 
   const topGainer = data.topGainers[0];
   const topLoser = data.topLosers[0];
 
+  let dominanceAnalysis: string;
+  if (data.btcDominance > 55) dominanceAnalysis = "La dominance BTC élevée indique un flight-to-quality — les altcoins sont sous pression.";
+  else if (data.btcDominance > 45) dominanceAnalysis = "La dominance BTC stable suggère un équilibre entre Bitcoin et altcoins.";
+  else dominanceAnalysis = "La faible dominance BTC ouvre la porte à une alt season potentielle.";
+
   return `Bitcoin évolue en tendance ${btcTrend} à $${data.bitcoin.price.toLocaleString()} (${data.bitcoin.change24h >= 0 ? "+" : ""}${data.bitcoin.change24h}%). ` +
-    `Ethereum suit une dynamique ${ethTrend} à $${data.ethereum.price.toLocaleString()}. ` +
-    `La capitalisation totale du marché est de $${data.marketCap}T avec une dominance BTC à ${data.btcDominance}%. ` +
+    `Ethereum suit une dynamique ${ethTrend} à $${data.ethereum.price.toLocaleString()} (${data.ethereum.change24h >= 0 ? "+" : ""}${data.ethereum.change24h}%). ` +
+    `Capitalisation totale : $${data.marketCap}T. BTC Dominance : ${data.btcDominance}%. ` +
+    `${dominanceAnalysis} ` +
     `${sentiment} ` +
     `Fear & Greed Index : ${fgi}/100. ` +
     (topGainer ? `Top performer : ${topGainer.symbol} (+${topGainer.change24h}%). ` : "") +
     (topLoser ? `Plus forte baisse : ${topLoser.symbol} (${topLoser.change24h}%).` : "");
 }
 
-function generateAlerts(data: Awaited<ReturnType<typeof fetchMarketData>>) {
+function generateAlerts(data: MarketDataResult) {
   const alerts: Array<{
     id: string;
     type: "volatility" | "breakout" | "risk";
@@ -78,92 +69,164 @@ function generateAlerts(data: Awaited<ReturnType<typeof fetchMarketData>>) {
     severity: "low" | "medium" | "high";
   }> = [];
 
-  // BTC volatility alert
-  if (Math.abs(data.bitcoin.change24h) > 5) {
+  const btcAbs = Math.abs(data.bitcoin.change24h);
+  const ethAbs = Math.abs(data.ethereum.change24h);
+
+  // BTC movement — always generate an alert about BTC
+  if (btcAbs > 5) {
     alerts.push({
       id: "live-1",
       type: "volatility",
       title: "Forte volatilité BTC",
-      description: `Bitcoin a varié de ${data.bitcoin.change24h >= 0 ? "+" : ""}${data.bitcoin.change24h}% en 24h.`,
+      description: `Bitcoin a varié de ${data.bitcoin.change24h >= 0 ? "+" : ""}${data.bitcoin.change24h}% en 24h. Mouvement significatif.`,
       timestamp: "Maintenant",
-      severity: Math.abs(data.bitcoin.change24h) > 10 ? "high" : "medium",
+      severity: btcAbs > 10 ? "high" : "high",
     });
-  }
-
-  // ETH volatility
-  if (Math.abs(data.ethereum.change24h) > 5) {
+  } else if (btcAbs > 2) {
     alerts.push({
-      id: "live-2",
+      id: "live-1",
       type: "volatility",
-      title: "Mouvement important ETH",
-      description: `Ethereum à $${data.ethereum.price.toLocaleString()} (${data.ethereum.change24h >= 0 ? "+" : ""}${data.ethereum.change24h}%).`,
+      title: `BTC ${data.bitcoin.change24h >= 0 ? "en hausse" : "en baisse"}`,
+      description: `Bitcoin à $${data.bitcoin.price.toLocaleString()} (${data.bitcoin.change24h >= 0 ? "+" : ""}${data.bitcoin.change24h}%). Mouvement modéré.`,
       timestamp: "Maintenant",
       severity: "medium",
     });
+  } else {
+    alerts.push({
+      id: "live-1",
+      type: "volatility",
+      title: "BTC en consolidation",
+      description: `Bitcoin stable à $${data.bitcoin.price.toLocaleString()} (${data.bitcoin.change24h >= 0 ? "+" : ""}${data.bitcoin.change24h}%). Volatilité faible.`,
+      timestamp: "Maintenant",
+      severity: "low",
+    });
   }
 
-  // Fear & Greed extremes
-  if (data.fearGreedIndex <= 20) {
+  // ETH movement
+  if (ethAbs > 3) {
+    alerts.push({
+      id: "live-2",
+      type: "volatility",
+      title: `Mouvement ${ethAbs > 5 ? "important" : "notable"} ETH`,
+      description: `Ethereum à $${data.ethereum.price.toLocaleString()} (${data.ethereum.change24h >= 0 ? "+" : ""}${data.ethereum.change24h}%).`,
+      timestamp: "Maintenant",
+      severity: ethAbs > 5 ? "high" : "medium",
+    });
+  }
+
+  // Fear & Greed analysis — always generate
+  if (data.fearGreedIndex <= 25) {
     alerts.push({
       id: "live-3",
       type: "risk",
       title: "Peur extrême sur le marché",
-      description: `Le Fear & Greed Index est à ${data.fearGreedIndex}/100. Zone de peur extrême.`,
+      description: `Fear & Greed Index à ${data.fearGreedIndex}/100. Historiquement, c'est une zone d'opportunité.`,
       timestamp: "Maintenant",
       severity: "high",
     });
-  } else if (data.fearGreedIndex >= 80) {
+  } else if (data.fearGreedIndex <= 40) {
     alerts.push({
-      id: "live-4",
+      id: "live-3",
       type: "risk",
-      title: "Cupidité extrême",
-      description: `Fear & Greed Index à ${data.fearGreedIndex}/100. Risque de correction élevé.`,
-      timestamp: "Maintenant",
-      severity: "high",
-    });
-  }
-
-  // Top movers alerts
-  const topGainer = data.topGainers[0];
-  if (topGainer && topGainer.change24h > 10) {
-    alerts.push({
-      id: "live-5",
-      type: "breakout",
-      title: `Pump ${topGainer.symbol}`,
-      description: `${topGainer.name} en hausse de +${topGainer.change24h}% à $${topGainer.price.toLocaleString()}.`,
-      timestamp: "Maintenant",
-      severity: topGainer.change24h > 20 ? "high" : "medium",
-    });
-  }
-
-  const topLoser = data.topLosers[0];
-  if (topLoser && topLoser.change24h < -10) {
-    alerts.push({
-      id: "live-6",
-      type: "risk",
-      title: `Chute ${topLoser.symbol}`,
-      description: `${topLoser.name} en baisse de ${topLoser.change24h}% à $${topLoser.price.toLocaleString()}.`,
-      timestamp: "Maintenant",
-      severity: "high",
-    });
-  }
-
-  // BTC dominance shift
-  if (data.btcDominance > 60) {
-    alerts.push({
-      id: "live-7",
-      type: "risk",
-      title: "Dominance BTC élevée",
-      description: `BTC dominance à ${data.btcDominance}%. Les altcoins sont sous pression.`,
+      title: "Sentiment de peur",
+      description: `Fear & Greed Index à ${data.fearGreedIndex}/100. Le marché est prudent.`,
       timestamp: "Maintenant",
       severity: "medium",
     });
+  } else if (data.fearGreedIndex >= 75) {
+    alerts.push({
+      id: "live-3",
+      type: "risk",
+      title: "Cupidité extrême",
+      description: `Fear & Greed Index à ${data.fearGreedIndex}/100. Risque de correction.`,
+      timestamp: "Maintenant",
+      severity: "high",
+    });
+  } else if (data.fearGreedIndex >= 60) {
+    alerts.push({
+      id: "live-3",
+      type: "risk",
+      title: "Marché optimiste",
+      description: `Fear & Greed Index à ${data.fearGreedIndex}/100. Cupidité modérée.`,
+      timestamp: "Maintenant",
+      severity: "low",
+    });
+  } else {
+    alerts.push({
+      id: "live-3",
+      type: "risk",
+      title: "Marché neutre",
+      description: `Fear & Greed Index à ${data.fearGreedIndex}/100. En attente de direction.`,
+      timestamp: "Maintenant",
+      severity: "low",
+    });
+  }
+
+  // Top gainer alert
+  const topGainer = data.topGainers[0];
+  if (topGainer) {
+    alerts.push({
+      id: "live-5",
+      type: "breakout",
+      title: `${topGainer.change24h > 8 ? "Pump" : "Hausse"} ${topGainer.symbol}`,
+      description: `${topGainer.name} ${topGainer.change24h > 8 ? "en forte hausse" : "en hausse"} de +${topGainer.change24h}% à $${topGainer.price.toLocaleString()}.`,
+      timestamp: "Maintenant",
+      severity: topGainer.change24h > 15 ? "high" : topGainer.change24h > 8 ? "medium" : "low",
+    });
+  }
+
+  // Top loser alert
+  const topLoser = data.topLosers[0];
+  if (topLoser) {
+    alerts.push({
+      id: "live-6",
+      type: "risk",
+      title: `${topLoser.change24h < -8 ? "Chute" : "Baisse"} ${topLoser.symbol}`,
+      description: `${topLoser.name} en baisse de ${topLoser.change24h}% à $${topLoser.price < 0.01 ? topLoser.price.toFixed(8) : topLoser.price.toLocaleString()}.`,
+      timestamp: "Maintenant",
+      severity: topLoser.change24h < -10 ? "high" : topLoser.change24h < -5 ? "medium" : "low",
+    });
+  }
+
+  // BTC dominance insight
+  if (data.btcDominance > 58) {
+    alerts.push({
+      id: "live-7",
+      type: "risk",
+      title: "Dominance BTC très élevée",
+      description: `BTC dominance à ${data.btcDominance}%. Les altcoins sont sous forte pression.`,
+      timestamp: "Maintenant",
+      severity: "high",
+    });
+  } else if (data.btcDominance > 52) {
+    alerts.push({
+      id: "live-7",
+      type: "breakout",
+      title: "Dominance BTC en hausse",
+      description: `BTC dominance à ${data.btcDominance}%. Le capital se concentre sur Bitcoin.`,
+      timestamp: "Maintenant",
+      severity: "low",
+    });
+  } else {
+    alerts.push({
+      id: "live-7",
+      type: "breakout",
+      title: "Alt season potentielle",
+      description: `BTC dominance faible à ${data.btcDominance}%. Rotation vers les altcoins.`,
+      timestamp: "Maintenant",
+      severity: "medium",
+    });
+  }
+
+  // Always ensure we have enough alerts — merge with defaults if needed
+  if (alerts.length < 3) {
+    return [...alerts, ...mockAlerts.slice(0, 3 - alerts.length)];
   }
 
   return alerts;
 }
 
-function generateInsights(data: Awaited<ReturnType<typeof fetchMarketData>>) {
+function generateInsights(data: MarketDataResult) {
   const fgi = data.fearGreedIndex;
   const topGainer = data.topGainers[0];
 
@@ -189,8 +252,8 @@ function generateInsights(data: Awaited<ReturnType<typeof fetchMarketData>>) {
     },
     {
       title: "Pump Alert",
-      value: topGainer ? `${topGainer.symbol} +${topGainer.change24h}%` : "N/A",
-      description: topGainer ? `${topGainer.name} top performer 24h` : "Pas de données",
+      value: topGainer ? `${topGainer.symbol} +${topGainer.change24h}%` : mockInsights[1].value,
+      description: topGainer ? `${topGainer.name} top performer 24h` : mockInsights[1].description,
       status: (topGainer && topGainer.change24h > 5 ? "positive" : "neutral") as "positive" | "negative" | "neutral",
     },
     {
