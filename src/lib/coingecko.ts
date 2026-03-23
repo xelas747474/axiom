@@ -97,7 +97,7 @@ async function fetchSafe<T>(url: string): Promise<T | null> {
 
     const res = await fetch(url, {
       signal: controller.signal,
-      next: { revalidate: 60 }, // Cache for 60s via Next.js ISR
+      cache: "no-store", // Always fresh — caching handled at route level via revalidate
       headers: { Accept: "application/json" },
     });
 
@@ -106,7 +106,7 @@ async function fetchSafe<T>(url: string): Promise<T | null> {
     if (!res.ok) return null;
     return (await res.json()) as T;
   } catch {
-    return null; // Timeout, network error, etc. — return null immediately
+    return null;
   }
 }
 

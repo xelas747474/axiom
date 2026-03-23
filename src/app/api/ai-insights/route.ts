@@ -1,7 +1,7 @@
 import { fetchMarketData, FALLBACK_MARKET_DATA } from "@/lib/coingecko";
 import { generateAIInsights, type AIInsightsResult } from "@/lib/ai-analysis";
 
-export const revalidate = 120; // ISR: cache for 2 minutes
+export const revalidate = 60; // ISR: refresh every 60s
 
 // Static fallback — guaranteed to never throw
 const STATIC_FALLBACK: AIInsightsResult = {
