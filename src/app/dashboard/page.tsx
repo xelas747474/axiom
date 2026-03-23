@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import Card from "@/components/Card";
 import Button from "@/components/Button";
 import AISummaryBlock from "@/components/AISummaryBlock";
@@ -94,7 +95,7 @@ export default function Dashboard() {
     const interval = setInterval(() => {
       retryCount = 0;
       fetchData();
-    }, 60000);
+    }, 30000); // Refresh every 30s
     return () => clearInterval(interval);
   }, []);
 
@@ -160,17 +161,21 @@ export default function Dashboard() {
           Comprends le marché crypto en temps réel grâce à l&apos;IA
         </p>
         <div className="relative mt-10 flex items-center justify-center gap-4 animate-fade-in" style={{ animationDelay: "400ms" }}>
-          <Button variant="primary" size="lg">
-            Voir le marché
-          </Button>
-          <Button variant="secondary" size="lg">
-            Analyse IA
-          </Button>
+          <Link href="#market-overview">
+            <Button variant="primary" size="lg">
+              Voir le marché
+            </Button>
+          </Link>
+          <Link href="/ai-insights">
+            <Button variant="secondary" size="lg">
+              Analyse IA
+            </Button>
+          </Link>
         </div>
       </section>
 
       {/* Section 2: Market Overview */}
-      <section className="animate-fade-in-up" style={{ animationDelay: "100ms" }}>
+      <section id="market-overview" className="animate-fade-in-up scroll-mt-24" style={{ animationDelay: "100ms" }}>
         <h2 className="text-xl font-bold text-white mb-5 flex items-center gap-2">
           Market Overview
           {!loading && (
